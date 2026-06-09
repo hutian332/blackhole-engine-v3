@@ -24,14 +24,16 @@
 ## 安装
 
 ```bash
-openclaw skills install <从 ClaudeHub 拉取>
+openclaw skills install <从 ClawHub 拉取>
 ```
 
 或手动复制 `SKILL.md` 到 `~/.openclaw/workspace/skills/blackhole-engine-v3/`
 
 ## 作者
 
-**殷竺欣** — 黑洞理论创始人、概念自有推理引擎发明人
+**殷竺欣**
+黑洞理论创始人
+概念自有推理引擎发明人
 
 ## 许可证
 
