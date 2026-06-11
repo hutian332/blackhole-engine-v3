@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>法斗 V6 — 3D点云 (万物死·马赛克)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:"Microsoft YaHei",sans-serif}
+canvas{display:block;cursor:grab}
+canvas:active{cursor:grabbing}
+.controls{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:10}
+.controls button{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:12px;background:#333;color:#ccc}
+.controls button.active{background:#6C63FF;color:white}
+.info{position:fixed;top:10px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.5);font-size:11px}
+</style>
+</head>
+<body>
+
+<canvas id="c" width="600" height="600"></canvas>
+<div class="info" id="info">🖱 拖动旋转 | 滚轮缩放 | 点云渲染</div>
+<div class="controls">
+  <button onclick="setView(0.3, 0)">正面</button>
+  <button onclick="setView(0, 0.5)">侧面</button>
+  <button onclick="setView(0, 0.8)">3/4侧</button>
+  <button onclick="setView(-0.6, 0.3)">俯视</button>
+  <button onclick="setView(0.5, 0.2)">仰视</button>
+  <button onclick="setView(-0.2, -0.5)">背面</button>
+  <button class="active" id="btnPoints" onclick="t('points')">点云</button>
+  <button onclick="t('wire')">线框</button>
+  <button onclick="t('solid')">实体</button>
+  <button onclick="t('detail')">+细节</button>
+  <button onclick="multiView()">多角度</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let mode = 'points';
+let rotX = -0.3, rotY = 0.4, zoom = 1.0;
+let dragging = false, lastX, lastY;
+
+function t(m){mode=m;document.querySelectorAll('button').forEach(b=>b.classList.remove('active'));document.getElementById('btnPoints').classList.add('active');if(m==='wire'){document.querySelectorAll('button')[1].classList.add('active')}if(m==='solid'){document.querySelectorAll('button')[2].classList.add('active')}if(m==='detail'){document.querySelectorAll('button')[3].classList.add('active')}draw()}
+
+// ═══ 3D点云生成 ═══
+// 每个点: {x, y, z, r, g, b, size}
+const points = [];
+
+function addSphere(cx, cy, cz, r, color, density=1.5) {
+  const [rr, gg, bb] = hexToRgb(color);
+  const step = 6 / density;
+  for (let phi = 0; phi < Math.PI; phi += step/12) {
+    for (let theta = 0; theta < Math.PI * 2; theta += step/12) {
+      const x = cx + r * Math.sin(phi) * Math.cos(theta);
+      const y = cy + r * Math.cos(phi);
+      const z = cz + r * Math.sin(phi) * Math.sin(theta);
+      // 加一点噪声模拟毛发
+      const noise = (Math.random() - 0.5) * r * 0.06;
+      points.push({
+        x: x + noise, y: y + noise, z: z + noise,
+        r: rr + (Math.random()-0.5)*15,
+        g: gg + (Math.random()-0.5)*15,
+        b: bb + (Math.random()-0.5)*15,
+        size: 1.5 + Math.random() * 1.5
+      });
+    }
+  }
+}
+
+function addEllipsoid(cx, cy, cz, rx, ry, rz, color, density=1.5, noiseScale=0.03) {
+  const [rr, gg, bb] = hexToRgb(color);
+  const step = 7 / density;
+  for (let phi = 0; phi < Math.PI; phi += step/10) {
+    for (let theta = 0; theta < Math.PI * 2; theta += step/10) {
+      const x = cx + rx * Math.sin(phi) * Math.cos(theta);
+      const y = cy + ry * Math.cos(phi);
+      const z = cz + rz * Math.sin(phi) * Math.sin(theta);
+      const noise = (Math.random() - 0.5) * rx * noiseScale;
+      points.push({
+        x: x + noise, y: y + noise, z: z + noise,
+        r: rr + (Math.random()-0.5)*12,
+        g: gg + (Math.random()-0.5)*12,
+        b: bb + (Math.random()-0.5)*12,
+        size: 1.5 + Math.random() * 1.5
+      });
+    }
+  }
+}
+
+function addCylinder(cx, cy, cz, r, h, color, density=2, angle=0) {
+  const [rr, gg, bb] = hexToRgb(color);
+  const step = 5 / density;
+  for (let y = 0; y < h; y += step) {
+    for (let theta = 0; theta < Math.PI * 2; theta += step / r) {
+      const x = cx + r * Math.cos(theta);
+      const z = cz + r * Math.sin(theta);
+      const ny = cy - h/2 + y;
+      points.push({
+        x: x + (Math.random()-0.5)*r*0.04,
+        y: ny + (Math.random()-0.5)*2,
+        z: z + (Math.random()-0.5)*r*0.04,
+        r: rr + (Math.random()-0.5)*10,
+        g: gg + (Math.random()-0.5)*10,
+        b: bb + (Math.random()-0.5)*10,
+        size: 1.5 + Math.random()
+      });
+    }
+  }
+}
+
+function addPatch(patchPoints, color) {
+  const [rr, gg, bb] = hexToRgb(color);
+  patchPoints.forEach(([x, y, z]) => {
+    points.push({
+      x: x + (Math.random()-0.5)*1.5,
+      y: y + (Math.random()-0.5)*1.5,
+      z: z + (Math.random()-0.5)*1.5,
+      r: rr + (Math.random()-0.5)*10,
+      g: gg + (Math.random()-0.5)*10,
+      b: bb + (Math.random()-0.5)*10,
+      size: 1 + Math.random()
+    });
+  });
+}
+
+function hexToRgb(hex) {
+  const h = hex.replace('#','');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+// ═══ 构建法斗点云 ═══
+function buildFrenchie() {
+  points.length = 0;
+  
+  // 坐标系: x=左右, y=上下, z=前后(朝向观察者)
+  // 身体中心在原点
+  
+  // 身体: 扁椭球 (宽>深=法斗特征)
+  addEllipsoid(0, 0, 0, 95, 55, 65, '#E8C9A0', 2.5, 0.04);
+  
+  // 胸斑 (白色椭圆区域)
+  addEllipsoid(0, 20, 40, 32, 28, 12, '#FFF8F0', 3, 0.02);
+  
+  // 头: 球体 (在身体前上方)
+  addEllipsoid(0, -75, 60, 48, 42, 42, '#F5E1C8', 2.8, 0.03);
+  
+  // 面罩 (深色)
+  addEllipsoid(0, -58, 68, 30, 22, 18, '#9B8B7E', 3, 0.02);
+  addEllipsoid(0, -52, 72, 22, 16, 12, '#8B6F5E', 3, 0.02);
+  
+  // 鼻子 (黑球)
+  addEllipsoid(0, -48, 78, 9, 7, 7, '#1a1a1a', 5, 0.01);
+  
+  // 鼻梁褶 (暗色环)
+  for (let i = 0; i < 80; i++) {
+    const angle = (i / 80) * Math.PI * 2;
+    const r = 13, cx = 0, cy = -45, cz = 74;
+    points.push({
+      x: cx + r * Math.cos(angle) + (Math.random()-0.5)*3,
+      y: cy + r * Math.sin(angle)*0.7 + (Math.random()-0.5)*2,
+      z: cz + (Math.random()-0.5)*4,
+      r: 90 + Math.random()*30, g: 60 + Math.random()*20, b: 40 + Math.random()*15,
+      size: 1 + Math.random()
+    });
+  }
+  
+  // 眼睛 (黑球)
+  addEllipsoid(-18, -68, 72, 8, 9, 5, '#1a1a1a', 6, 0.005);
+  addEllipsoid(18, -68, 72, 8, 9, 5, '#1a1a1a', 6, 0.005);
+  
+  // 眼高光 (白点)
+  addEllipsoid(-15, -72, 76, 2.5, 2.5, 1.5, '#FFFFFF', 8, 0.005);
+  addEllipsoid(21, -72, 76, 2.5, 2.5, 1.5, '#FFFFFF', 8, 0.005);
+  
+  // 眉间沟 (暗色竖向)
+  for (let i = 0; i < 30; i++) {
+    const y = -82 + i * 1.5;
+    const z = 64 + Math.sin((y + 82) / 25) * 8;
+    points.push({
+      x: (Math.random()-0.5)*4,
+      y: y, z: z,
+      r: 130 + Math.random()*20, g: 100 + Math.random()*15, b: 80 + Math.random()*10,
+      size: 1 + Math.random()*1.5
+    });
+  }
+  
+  // 耳朵 (蝙蝠耳)
+  // 左耳
+  for (let i = 0; i < 100; i++) {
+    const t = i / 100;
+    const bx = -28, by = -82, bz = 45;
+    const tipX = -45, tipY = -130, tipZ = 35;
+    const x = bx + (tipX - bx) * t + (Math.random()-0.5)*4;
+    const y = by + (tipY - by) * t + (Math.random()-0.5)*3;
+    const z = bz + (tipZ - bz) * t * Math.sin(t * Math.PI) + (Math.random()-0.5)*5;
+    points.push({
+      x, y, z,
+      r: 100 + Math.random()*30, g: 60 + Math.random()*20, b: 40 + Math.random()*15,
+      size: 1 + Math.random()*1.5
+    });
+  }
+  // 右耳
+  for (let i = 0; i < 100; i++) {
+    const t = i / 100;
+    const bx = 28, by = -82, bz = 45;
+    const tipX = 45, tipY = -130, tipZ = 35;
+    const x = bx + (tipX - bx) * t + (Math.random()-0.5)*4;
+    const y = by + (tipY - by) * t + (Math.random()-0.5)*3;
+    const z = bz + (tipZ - bz) * t * Math.sin(t * Math.PI) + (Math.random()-0.5)*5;
+    points.push({
+      x, y, z,
+      r: 100 + Math.random()*30, g: 60 + Math.random()*20, b: 40 + Math.random()*15,
+      size: 1 + Math.random()*1.5
+    });
+  }
+  
+  // 前腿 (4根圆柱)
+  addCylinder(-48, 55, 10, 16, 60, '#E8C9A0', 3);   // 前左
+  addCylinder(48, 55, 10, 14, 60, '#D4B088', 3);    // 前右(略暗)
+  addCylinder(-38, 50, -20, 16, 50, '#D4B088', 3);  // 后左
+  addCylinder(38, 50, -20, 14, 50, '#C4A070', 3);   // 后右(更暗)
+  
+  // 爪子
+  [-48, 48, -38, 38].forEach((lx, i) => {
+    const lz = i < 2 ? 10 : -20;
+    const ly = i < 2 ? 85 : 75;
+    addEllipsoid(lx, ly, lz, 18, 7, 12, '#F0D8B8', 4, 0.02);
+  });
+  
+  // 尾巴 (锥形)
+  for (let i = 0; i < 80; i++) {
+    const t = i / 80;
+    const bx = 75, by = -20, bz = -15;
+    const tipX = 105, tipY = -60, tipZ = 0;
+    const taper = 1 - t * 0.7;
+    const x = bx + (tipX - bx) * t + (Math.random()-0.5) * 8 * taper;
+    const y = by + (tipY - by) * t + (Math.random()-0.5) * 5 * taper;
+    const z = bz + (tipZ - bz) * t + (Math.random()-0.5) * 6 * taper;
+    points.push({
+      x, y, z,
+      r: 210 + Math.random()*25, g: 180 + Math.random()*20, b: 130 + Math.random()*15,
+      size: 1.5 + Math.random() * (1 - t * 0.6)
+    });
+  }
+  
+  // 皮肤褶皱 (额外暗色点)
+  // 额头褶
+  for (let fold = 0; fold < 3; fold++) {
+    const fy = -90 + fold * 10;
+    for (let i = 0; i < 40; i++) {
+      const angle = (i / 40) * Math.PI;
+      const rx = 35 - fold * 3;
+      const x = Math.cos(angle) * rx + (Math.random()-0.5)*4;
+      const y = fy + Math.sin(angle) * 5 + (Math.random()-0.5)*2;
+      const z = 62 - fold * 3 + (Math.random()-0.5)*5;
+      points.push({
+        x, y, z,
+        r: 130 + Math.random()*20, g: 100 + Math.random()*15, b: 80 + Math.random()*10,
+        size: 0.8 + Math.random()*0.8
+      });
+    }
+  }
+  
+  // 身体侧褶
+  for (let fold = 0; fold < 3; fold++) {
+    const fy = -25 + fold * 18;
+    for (let i = 0; i < 30; i++) {
+      const x = -60 + i * 4 + (Math.random()-0.5)*3;
+      const z = 0 + Math.sin(i / 8) * 15 + (Math.random()-0.5)*6;
+      points.push({
+        x, y: fy + (Math.random()-0.5)*3, z,
+        r: 160 + Math.random()*15, g: 130 + Math.random()*12, b: 100 + Math.random()*10,
+        size: 0.8 + Math.random()*0.6
+      });
+    }
+  }
+  
+  // W嘴
+  for (let i = 0; i < 40; i++) {
+    const t = i / 40;
+    const x = -10 + t * 20;
+    const w = -Math.sin(t * Math.PI) * 8;
+    points.push({
+      x, y: -40 + w, z: 75,
+      r: 70 + Math.random()*15, g: 40 + Math.random()*10, b: 30 + Math.random()*8,
+      size: 1.5 + Math.random()
+    });
+  }
+  
+  // ═══ 计算自阴影 (Ambient Occlusion) ═══
+  console.log('Computing self-shadow occlusion...');
+  
+  // 空间网格加速
+  const cellSize = 14;
+  const grid = new Map();
+  points.forEach((p, i) => {
+    const cx = Math.round(p.x / cellSize);
+    const cy = Math.round(p.y / cellSize);
+    const cz = Math.round(p.z / cellSize);
+    const key = `${cx},${cy},${cz}`;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push({...p, idx: i});
+  });
+  
+  // 为每个点计算AO
+  points.forEach((p, i) => {
+    let occlusion = 0;
+    let samples = 0;
+    
+    // 在光源反方向采样（检查是否有遮挡）
+    const lx = LIGHT.x, ly = LIGHT.y, lz = LIGHT.z;
+    
+    for (let s = 0; s < 6; s++) {
+      // 采样方向: 光源方向 + 一些偏移
+      const jitter = (s / 6) * Math.PI * 2;
+      const sx = lx * 2 + Math.cos(jitter) * 0.3;
+      const sy = ly * 2 + Math.sin(jitter) * 0.3;
+      const sz = lz * 2;
+      
+      // 沿采样方向检查5步
+      for (let step = 1; step <= 5; step++) {
+        const qx = p.x + sx * step * 3;
+        const qy = p.y + sy * step * 3;
+        const qz = p.z + sz * step * 3;
+        
+        const cx = Math.round(qx / cellSize);
+        const cy = Math.round(qy / cellSize);
+        const cz = Math.round(qz / cellSize);
+        const key = `${cx},${cy},${cz}`;
+        const neighbors = grid.get(key);
+        
+        if (neighbors && neighbors.some(n => {
+          const dx = n.x - qx, dy = n.y - qy, dz = n.z - qz;
+          return Math.sqrt(dx*dx + dy*dy + dz*dz) < cellSize * 0.7;
+        })) {
+          occlusion += (6 - step) / 5;  // 越近越暗
+          break;
+        }
+      }
+      samples++;
+    }
+    
+    // AO因子: 0=全暗, 1=全亮
+    p.ao = 1.0 - (occlusion / samples) * 0.55;
+    
+    // 位置启发式增强: 腹部、腿间、下巴下
+    if (p.y > 15 && Math.abs(p.x) < 40 && p.z > -20 && p.z < 30) {
+      p.ao *= 0.75;  // 腹部阴影
+    }
+    if (Math.abs(p.x) < 25 && p.y < -60 && p.z > 55) {
+      p.ao *= 0.78;  // 下巴下阴影
+    }
+    if (p.y > -100 && p.y < -75 && Math.abs(p.x) > 20 && Math.abs(p.x) < 38 && p.z > 35) {
+      p.ao *= 0.82;  // 耳根阴影
+    }
+  });
+  
+  console.log('Self-shadow computed for', points.length, 'points');
+
+// ═══ 3D投影 ═══
+function project(x, y, z) {
+  // 旋转
+  const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  
+  // Y轴旋转
+  let rx = x * cosY - z * sinY;
+  let rz = x * sinY + z * cosY;
+  let ry = y;
+  
+  // X轴旋转
+  let ry2 = ry * cosX - rz * sinX;
+  let rz2 = ry * sinX + rz * cosX;
+  
+  // 透视投影
+  const dist = 500 * zoom;
+  const scale = dist / (dist + rz2 + 100);
+  
+  return {
+    sx: W/2 + rx * scale,
+    sy: H/2 + ry2 * scale,
+    scale: scale
+  };
+}
+
+// ═══ 渲染 ═══
+const LIGHT = {x: 0.3, y: -0.6, z: 0.7};  // 光源方向(归一化)
+
+// 为每个点估算法线(简化: 从中心向外的方向)
+function getNormal(x, y, z) {
+  // 简化: 身体中心在(0,-20,10)
+  const cx = 0, cy = -20, cz = 10;
+  const dx = x - cx, dy = y - cy, dz = z - cz;
+  const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+  return {x: dx/len, y: dy/len, z: dz/len};
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  
+  // 背景渐变
+  const bgGrad = ctx.createRadialGradient(W/2, H*0.4, 50, W/2, H/2, W);
+  bgGrad.addColorStop(0, '#2a2a3e');
+  bgGrad.addColorStop(1, '#0f0f1a');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+  
+  // 投影 + 深度排序
+  const sorted = points.map((p, i) => {
+    const proj = project(p.x, p.y, p.z);
+    const normal = getNormal(p.x, p.y, p.z);
+    // 漫反射光照
+    const dot = normal.x * LIGHT.x + normal.y * LIGHT.y + normal.z * LIGHT.z;
+    const lighting = (0.35 + 0.65 * Math.max(0, dot)) * (p.ao || 1.0);  // AO自阴影
+    return {...p, ...proj, idx: i, lighting};
+  }).sort((a, b) => a.scale - b.scale);  // 远先近后
+  
+  // 地面阴影 (先画，在狗下面)
+  const shadowPoints = sorted.filter(p => p.y > 20 && p.scale < 1.2);
+  if (shadowPoints.length > 10) {
+    const avgSX = shadowPoints.reduce((s,p) => s + p.sx, 0) / shadowPoints.length;
+    const avgSY = shadowPoints.reduce((s,p) => s + p.sy, 0) / shadowPoints.length;
+    const shadowGrad = ctx.createRadialGradient(avgSX, avgSY + 10, 5, avgSX, avgSY + 20, 120);
+    shadowGrad.addColorStop(0, 'rgba(0,0,0,0.2)');
+    shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shadowGrad;
+    ctx.beginPath();
+    ctx.ellipse(avgSX, avgSY + 20, 100, 25, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+  
+  sorted.forEach(p => {
+    if (p.sx < -30 || p.sx > W+30 || p.sy < -30 || p.sy > H+30) return;
+    
+    // 深度衰减: 远的点更暗更小
+    const depthFade = p.scale;
+    const alpha = 0.5 + depthFade * 0.5;
+    
+    const lr = Math.round(p.r * p.lighting * depthFade);
+    const lg = Math.round(p.g * p.lighting * depthFade);
+    const lb = Math.round(p.b * p.lighting * depthFade);
+    
+    if (mode === 'points') {
+      ctx.fillStyle = `rgba(${lr},${lg},${lb},${alpha})`;
+      ctx.beginPath();
+      const sz = Math.max(0.8, p.size * depthFade * 1.3);
+      ctx.arc(p.sx, p.sy, sz, 0, Math.PI*2);
+      ctx.fill();
+    } else if (mode === 'wire') {
+      if (p.idx % 5 !== 0) return;
+      ctx.strokeStyle = `rgba(255,255,255,${0.15 + depthFade*0.15})`;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, Math.max(1.5, p.size * depthFade * 2), 0, Math.PI*2);
+      ctx.stroke();
+    } else if (mode === 'solid') {
+      // 实体: 大点 + 软边缘
+      const sz = Math.max(2.5, p.size * depthFade * 3);
+      const softGrad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, sz);
+      softGrad.addColorStop(0, `rgba(${Math.min(255,lr+20)},${Math.min(255,lg+15)},${Math.min(255,lb+10)},${alpha})`);
+      softGrad.addColorStop(0.6, `rgba(${lr},${lg},${lb},${alpha*0.8})`);
+      softGrad.addColorStop(1, `rgba(${Math.max(0,lr-20)},${Math.max(0,lg-15)},${Math.max(0,lb-10)},0)`);
+      ctx.fillStyle = softGrad;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, sz, 0, Math.PI*2);
+      ctx.fill();
+    } else if (mode === 'detail') {
+      // 实体 + 高光点
+      const sz = Math.max(2.5, p.size * depthFade * 2.8);
+      const softGrad = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, sz);
+      softGrad.addColorStop(0, `rgba(${Math.min(255,lr+25)},${Math.min(255,lg+20)},${Math.min(255,lb+15)},${alpha})`);
+      softGrad.addColorStop(0.5, `rgba(${lr},${lg},${lb},${alpha*0.7})`);
+      softGrad.addColorStop(1, `rgba(${Math.max(0,lr-25)},${Math.max(0,lg-20)},${Math.max(0,lb-15)},0)`);
+      ctx.fillStyle = softGrad;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, sz, 0, Math.PI*2);
+      ctx.fill();
+      
+      // 高光 (法线朝向光源的点加亮)
+      if (p.lighting > 0.75) {
+        ctx.fillStyle = `rgba(255,255,255,${(p.lighting-0.75)*alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.sx, p.sy, sz * 0.5, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  });
+  
+  // 地面参考线
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(100, H/2 + 100);
+  ctx.lineTo(W - 100, H/2 + 100);
+  ctx.stroke();
+}
+
+// ═══ 交互 ═══
+canvas.addEventListener('mousedown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  rotY += (e.clientX - lastX) * 0.01;
+  rotX += (e.clientY - lastY) * 0.01;
+  lastX = e.clientX; lastY = e.clientY;
+  draw();
+});
+canvas.addEventListener('mouseup', () => dragging = false);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom += e.deltaY * -0.001;
+  zoom = Math.max(0.3, Math.min(3, zoom));
+  draw();
+});
+
+function setView(rx, ry) {
+  rotX = rx; rotY = ry;
+  draw();
+}
+
+function multiView() {
+  // 画4个角度
+  const views = [
+    {rx: 0, ry: 0, label: '正面', x: 0, y: 0},
+    {rx: 0, ry: 0.8, label: '3/4侧', x: W/2, y: 0},
+    {rx: 0, ry: 1.6, label: '侧面', x: 0, y: H/2},
+    {rx: -0.5, ry: 0.5, label: '俯视', x: W/2, y: H/2},
+  ];
+  
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0f0f1a';
+  ctx.fillRect(0, 0, W, H);
+  
+  const savedRX = rotX, savedRY = rotY;
+  
+  views.forEach(v => {
+    rotX = v.rx; rotY = v.ry;
+    
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(v.x + 2, v.y + 2, W/2 - 4, H/2 - 4);
+    ctx.clip();
+    
+    // 重投影
+    const sorted = points.map(p => {
+      const proj = project(p.x, p.y, p.z);
+      const normal = getNormal(p.x, p.y, p.z);
+      const dot = normal.x * LIGHT.x + normal.y * LIGHT.y + normal.z * LIGHT.z;
+      const lighting = (0.35 + 0.65 * Math.max(0, dot)) * (p.ao || 1.0);
+      return {...p, ...proj, lighting};
+    }).sort((a, b) => a.scale - b.scale);
+    
+    // 缩放到子窗口
+    const offsetX = v.x, offsetY = v.y;
+    const scaleV = 0.45;
+    
+    sorted.forEach(p => {
+      const sx = offsetX + (p.sx - W/2) * scaleV + (W/2) * scaleV;
+      const sy = offsetY + (p.sy - H/2) * scaleV + (H/2) * scaleV;
+      
+      if (sx < v.x || sx > v.x + W/2 || sy < v.y || sy > v.y + H/2) return;
+      
+      const depthFade = p.scale;
+      const lr = Math.round(p.r * p.lighting * depthFade);
+      const lg = Math.round(p.g * p.lighting * depthFade);
+      const lb = Math.round(p.b * p.lighting * depthFade);
+      
+      const sz = Math.max(1.8, p.size * depthFade * 2.2 * scaleV);
+      const softGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz);
+      softGrad.addColorStop(0, `rgba(${Math.min(255,lr+20)},${Math.min(255,lg+15)},${Math.min(255,lb+10)},0.7)`);
+      softGrad.addColorStop(0.6, `rgba(${lr},${lg},${lb},0.55)`);
+      softGrad.addColorStop(1, `rgba(${Math.max(0,lr-20)},${Math.max(0,lg-15)},${Math.max(0,lb-10)},0)`);
+      ctx.fillStyle = softGrad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sz, 0, Math.PI*2);
+      ctx.fill();
+    });
+    
+    // 标签
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(v.label, v.x + 8, v.y + 18);
+    
+    ctx.restore();
+  });
+  
+  // 分隔线
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H);
+  ctx.moveTo(0, H/2); ctx.lineTo(W, H/2);
+  ctx.stroke();
+  
+  rotX = savedRX; rotY = savedRY;
+}
+
+buildFrenchie();
+draw();
+</script>
+</body>
+</html>

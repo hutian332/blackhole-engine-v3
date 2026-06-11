@@ -1,0 +1,27 @@
+# Blackhole Engine V3 — Python Dependencies
+# 核心依赖（必须）
+numpy>=1.26.0
+Pillow>=10.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# HTTP服务
+flask>=3.0.0
+
+# 视觉系统（可选，用于视觉模块）
+opencv-python>=4.8.0
+pytesseract>=0.3.10
+
+# 本地AI（可选，用于Ollama推理）
+# ollama (需单独安装: https://ollama.com)
+
+# 语音（可选）
+# whisper (需单独安装: pip install openai-whisper)
+# sounddevice>=0.4.6
+
+# 电脑操控（可选，用于Agent Loop的shell工具）
+pyautogui>=0.9.54
+pywinauto>=0.6.8
+
+# 网页渲染（可选，用于视觉反馈环）
+# playwright (需单独安装: pip install playwright && playwright install)
